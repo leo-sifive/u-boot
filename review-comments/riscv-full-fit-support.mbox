@@ -1,0 +1,43 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Nikita Shubin <nikita.shubin@maquefel.me>
+Cc: u-boot@lists.u-boot-project.org, Tom Rini <trini@konsulko.com>,
+ Simon Glass <sjg@chromium.org>, Daniel Golle <daniel@makrotopia.org>,
+ James Hilliard <james.hilliard1@gmail.com>,
+ Aristo Chen <aristo.chen@canonical.com>, Francesco Valla <francesco@valla.it>,
+ Anton Ivanov <anton@binarly.io>
+Subject: Re: [PATCH v2 1/6] image: fit: allow IH_OS_OPENSBI in fit_image_load()
+Message-Id: <review-riscv-full-fit-support@andestech.com>
+In-Reply-To: <20260902-riscv-full-fit-support-v2-1-493e904a129e@maquefel.me>
+References: <20260902-riscv-full-fit-support-v2-0-493e904a129e@maquefel.me>
+ <20260902-riscv-full-fit-support-v2-1-493e904a129e@maquefel.me>
+Date: Mon, 05 Oct 2026 10:30:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+Patch 1/6 is a trivial, well-reviewed os_ok whitelist addition - fine.
+
+Patch 2/6 (common/spl/spl_ram.c) has a shadowing issue:
+
+  if (IS_ENABLED(CONFIG_SPL_LOAD_FIT) &&
+      image_get_magic(header) == FDT_MAGIC) {
+          debug("Found FIT\n");
+          /* by default, assume failure and fall back to simple FIT */
+          int ret = -1;
+          ...
+  } else {
+
+The function already has an outer-scope `ret` (used by the pre-existing
+`ret = spl_load_simple_fit(...)` pattern and presumably the function's
+return value). Declaring `int ret = -1;` inside this if-block shadows that
+outer variable. If the compiler's -Wshadow is enabled this will warn, and
+more importantly if any code further down in the function (after this
+if/else) reads the outer `ret` expecting it to reflect the FIT load result,
+it will now see stale/uninitialized data instead, since the inner `ret` is
+scoped only to the if-block. Please rename the inner variable (e.g.
+`fit_ret`) or declare it at the top of the function alongside the existing
+`ret`.
+
+Also: when CONFIG_IS_ENABLED(LOAD_FIT_FULL) is not set, `ret` is left at -1
+and unconditionally falls through to the simple-FIT path - that's correct
+behavior, but worth a one-line comment since it's not obvious at a glance
+that the "assume failure" default is what drives the fallback.

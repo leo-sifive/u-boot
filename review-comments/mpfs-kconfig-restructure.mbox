@@ -1,0 +1,38 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Jamie Gibbons <jamie.gibbons@microchip.com>
+Cc: u-boot@lists.denx.de, Conor Dooley <conor.dooley@microchip.com>,
+ Valentina Fernandez Alanis <valentina.fernandezalanis@microchip.com>,
+ Tom Rini <trini@konsulko.com>, Cyril Jean <cyril.jean@microchip.com>,
+ Tim Ouyang <tim609@andestech.com>, Leo Liang <leo.liang@sifive.com>,
+ Yao Zi <me@ziyao.cc>
+Subject: Re: [PATCH 1/3] board: microchip: mpfs_generic: drop system controller Kconfig selects
+Message-Id: <review-mpfs-kconfig-restructure@andestech.com>
+In-Reply-To: <20260917094452.1043879-2-jamie.gibbons@microchip.com>
+References: <20260917094452.1043879-1-jamie.gibbons@microchip.com>
+ <20260917094452.1043879-2-jamie.gibbons@microchip.com>
+Date: Mon, 05 Oct 2026 12:10:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+The overall direction (centralizing DM_MAILBOX/MPFS_MBOX/MISC/
+MPFS_SYSCONTROLLER implies into arch/riscv/cpu/mpfs/Kconfig instead of
+duplicating them per-board) is a sensible cleanup, and 1/3 + 2/3 removing
+the per-board implies while 3/3 adds them centrally does keep the net
+Kconfig behavior equivalent for mpfs_generic and beaglev_fire once the full
+series is applied.
+
+One question on bisectability: since 1/3 and 2/3 remove these implies from
+the two board Kconfigs before 3/3 adds the equivalent implies to the common
+MPFS Kconfig, is there any other MPFS-based board besides mpfs_generic and
+beaglev_fire that currently relies on getting DM_MAILBOX/MPFS_MBOX/MISC/
+MPFS_SYSCONTROLLER transitively from one of these two boards' Kconfig
+(e.g. via a "select BOARD_MICROCHIP_MPFS_GENERIC" chain, if such a thing
+exists)? If not, bisection within the 3-patch series is fine since each
+commit is self-contained for its own board; just confirming no third board
+depends on mpfs_generic's or beaglev_fire's Kconfig as a side-channel for
+these options.
+
+Is there a 4th board (or MPFS variant) that should also have had its
+per-board implies removed, to avoid duplicate "imply" statements from both
+the common CPU Kconfig and that board's Kconfig now implying the same
+symbols twice (harmless but redundant)?

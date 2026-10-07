@@ -1,0 +1,32 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Benoît Monin <benoit.monin@bootlin.com>
+Cc: u-boot@lists.u-boot-project.org, Yao Zi <me@ziyao.cc>,
+ Tom Rini <trini@konsulko.com>, Thomas Petazzoni <thomas.petazzoni@bootlin.com>,
+ Quentin Schulz <quentin.schulz@cherry.de>,
+ Jun Chang <jun.chang@metanoia-comm.com>
+Subject: Re: [PATCH 01/10] iopoll: Add readw_poll_sleep_timeout
+Message-Id: <review-metanoia-mt2824-v1@andestech.com>
+In-Reply-To: <20261002-mt2824-v1-1-bc44cf0e0289@bootlin.com>
+References: <20261002-mt2824-v1-0-bc44cf0e0289@bootlin.com>
+ <20261002-mt2824-v1-1-bc44cf0e0289@bootlin.com>
+Date: Mon, 05 Oct 2026 12:20:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+Patch 01/10 (readw_poll_sleep_timeout) is a small, mechanical addition
+following the existing readl_poll_sleep_timeout pattern in
+include/linux/iopoll.h - looks correct and low risk on its own.
+
+I see Tom Rini already left several inline "Re:" review comments further
+into this thread (at least on patches 01, 03, 04, and 06/10 going by the
+Message-IDs referencing this series) - has this iopoll patch itself (01/10)
+received any specific feedback, or is it considered mechanical/uncontested
+given patches 03+ reuse it (e.g. disk: efi: GPT entries buffer, nvmxip SPL
+support)?
+
+Given this is a 10-patch series touching core readw/readl polling, a new
+RISC-V SoC's full enablement (reset driver, MMC, RAM, SPI, device trees,
+and board support), could you clarify in a reply whether patch 01/10 is
+intended to be picked up independently of the rest of the series (since
+it's a generic core change useful beyond MT2824), or should it only land
+together with the full series?

@@ -1,0 +1,194 @@
+From mboxrd@z Thu Jan  1 00:00:00 1970
+From: Leo Liang <leo.liang@sifive.com>
+To: u-boot@lists.u-boot-project.org
+Cc: Neil Armstrong <neil.armstrong@linaro.org>, Yixun Lan <dlan@kernel.org>,
+ Tom Rini <trini@konsulko.com>, Eric Chung <eric.chung@riscstar.com>,
+ Dave Klotz <DaveWK225@protonmail.com>
+Subject: Re: [PATCH 0/7] phy: spacemit: k1: fix the PCIe and combo PHY driver
+In-Reply-To: <cover.1790975597.git.DaveWK225@protonmail.com>
+References: <cover.1790975597.git.DaveWK225@protonmail.com>
+Date: Wed, 07 Oct 2026 12:00:00 +0000
+
+Hi Dave,
+
+Thanks for the series. Went through all 7 patches against the actual
+register/bitfield handling; comments below per patch.
+
+1/7 enable refclk and deassert the PHY reset at probe
+------------------------------------------------------
+> +	ret = clk_get_by_name(dev, "refclk", &k1_phy->refclk);
+> +	ret = clk_enable(&k1_phy->refclk);
+> +	ret = reset_get_by_name(dev, "phy", &k1_phy->phy_rst);
+> +	ret = reset_deassert(&k1_phy->phy_rst);
+
+Ordering matches Linux: refclk is enabled before the "phy" reset is
+deasserted, and k1_pcie_phy_enable_resources() fails the probe (via
+k1_pcie_phy_probe()'s "return ret") if either step fails, instead of
+just warning as the old clk_get_bulk()/reset_get_bulk() path did.
+GLOBAL_PHY_RST is correctly dropped from PCIE_CLK_RES_CTRL in
+k1_pcie_combo_phy_calibrate() since the "phy" reset now owns that bit.
+One thing worth double-checking: on the err_clk path in
+k1_pcie_phy_enable_resources(), only clk_disable(&k1_phy->refclk) is
+called if reset_get_by_name()/reset_deassert() fails -- that's fine
+functionally (probe fails either way), just flagging that it's not a
+symmetric "undo everything" unwind, matches common U-Boot practice.
+
+2/7 don't start the combo PHY PLL to calibrate
+------------------------------------------------
+> -	writel(0x00000B78, regs + PCIE_PU_ADDR_CLK_CFG);
+> -	writel(CFG_FORCE_RCV_RETRY, regs + PCIE_RC_DONE_STATUS);
+
+Removing the PCIE_PU_ADDR_CLK_CFG/PCIE_PU_PLL_1/PCIE_PU_PLL_2 writes
+(refclk mode, FREF_SEL, REF_100_WSSC, SSC_DEP_SEL, and the 0xb78 PLL
+start) from k1_pcie_combo_phy_calibrate() matches the Linux flow you
+describe: calibration only needs R_TUNE_DONE via PCIE_RCAL_RESULT, not
+a running PLL. This also fixes the whole-register overwrites of
+PCIE_PU_ADDR_CLK_CFG and PCIE_RC_DONE_STATUS that 6/7 later converts to
+read-modify-write elsewhere -- good that calibration no longer touches
+them at all rather than needing the same fix twice.
+
+3/7 restore port A state after calibration
+----------------------------------------------
+> +	ctrl = readl(apmu + PCIE_CLK_RES_CTRL);
+> +	sel = readl(apmu + PMUA_USB_PHY_CTRL0) & COMBO_PHY_SEL;
+...
+> +	val = readl(apmu + PCIE_CLK_RES_CTRL);
+> +	val &= ~(DEVICE_TYPE_RC | APMU_CLK_GATE_MASK);
+> +	val |= ctrl & (DEVICE_TYPE_RC | APMU_CLK_GATE_MASK);
+> +	writel(val, apmu + PCIE_CLK_RES_CTRL);
+> +
+> +	k1_combo_phy_sel(k1_phy, sel);
+
+The restore only touches DEVICE_TYPE_RC and APMU_CLK_GATE_MASK (bits
+0-5) in PCIE_CLK_RES_CTRL, leaving PCIE_APP_HOLD_PHY_RST cleared as
+left by the calibration sequence itself -- consistent with the commit
+message ("APP_HOLD_PHY_RST stays clear, as in Linux"). k1_combo_phy_sel()
+is called unconditionally with the saved `sel`, so calibration restores
+whichever mode port A (PCIe) vs. the USB 3 lane was in before, rather
+than assuming PCIe -- addresses the "could restoring clobber port B"
+concern: this patch only ever touches port A's own clock/reset/mode
+register and COMBO_PHY_SEL, so port B/C (which are separate PCIe
+controller instances per the cover letter) aren't affected. The `goto
+out` added for the already-calibrated case correctly still runs the
+restore path since `out:` is placed before the restore block, not after
+it -- confirmed from the diff context.
+
+4/7 program the termination fields properly
+-----------------------------------------------
+> +		val &= ~AFE_RTERM_REG;
+>  		val |= FIELD_PREP(AFE_RTERM_REG, k1_phy_rterm_rx());
+> +		val |= EN_RTERM;
+...
+> +		val &= ~TX_RTERM_REG;
+>  		val |= FIELD_PREP(TX_RTERM_REG, k1_phy_rterm_tx());
+
+Field masks are cleared before OR-ing in the new value on both
+PCIE_RX_REG1/AFE_RTERM_REG and PCIE_TX_REG1/TX_RTERM_REG, fixing the
+bug where leftover reset-state bits would corrupt the calibrated
+value. EN_RTERM is added only to the RX_REG1 write, matching the
+commit message's "enables the refclock receiver termination" -- correct
+since that's a receiver-side feature, not applicable to TX_REG1.
+
+5/7 set CLKSEL on every lane
+-------------------------------
+> -	val = readl(regs + PCIE_RC_CAL_REG2);
+> -	val |= FIELD_PREP(CLKSEL, CLKSEL_24M);
+> -	writel(val, regs + PCIE_RC_CAL_REG2);
+> +	for (i = 0; i < lane; i++) {
+> +		val = readl(regs + PCIE_RC_CAL_REG2 + PHY_LANE_OFFSET * i);
+> +		val &= ~CLKSEL;
+> +		val |= FIELD_PREP(CLKSEL, CLKSEL_24M);
+> +		writel(val, regs + PCIE_RC_CAL_REG2 + PHY_LANE_OFFSET * i);
+> +	}
+
+Looping over `lane` with PHY_LANE_OFFSET matches the pattern already
+used for the RX/TX termination loops just above it in the same
+function, so lane 1 of 2-lane ports B/C now gets CLKSEL set instead of
+keeping its reset value. Clearing CLKSEL before the FIELD_PREP write
+is the right fix for the OR-only bug described. Choosing to mask only
+CLKSEL rather than the whole register (unlike Linux's "val &= CLKSEL")
+is called out explicitly in the commit message as intentional, to
+avoid clobbering other fields of PCIE_RC_CAL_REG2 -- makes sense.
+
+6/7 don't overwrite whole PLL control registers
+----------------------------------------------------
+> -	val = 0x00000B78;
+> -	writel(val, regs + PCIE_PU_ADDR_CLK_CFG);
+> -	writel(val, regs + PHY_LANE_OFFSET + PCIE_PU_ADDR_CLK_CFG);
+> +	for (i = 0; i < lane; i++) {
+> +		val = readl(regs + PCIE_PU_ADDR_CLK_CFG + PHY_LANE_OFFSET * i);
+> +		val &= ~CFG_INTERNAL_TIMER_ADJ;
+> +		val |= FIELD_PREP(CFG_INTERNAL_TIMER_ADJ, TIMER_ADJ_PCIE);
+> +		writel(val, regs + PCIE_PU_ADDR_CLK_CFG + PHY_LANE_OFFSET * i);
+> +	}
+...
+> +	for (i = 0; i < lane; i++) {
+> +		val = readl(regs + PCIE_PU_ADDR_CLK_CFG + PHY_LANE_OFFSET * i);
+> +		val |= CFG_SW_PHY_INIT_DONE;
+> +		writel(val, regs + PCIE_PU_ADDR_CLK_CFG + PHY_LANE_OFFSET * i);
+> +	}
+
+Splitting the old magic 0xb78 write into named-field read-modify-write
+(CFG_INTERNAL_TIMER_ADJ = TIMER_ADJ_PCIE, then CFG_SW_PHY_INIT_DONE set
+only after CFG_FORCE_RCV_RETRY and the PLL ref/SSC config are in place)
+matches the ordering Linux uses and is consistent with how 7/7's
+k1_combo_phy_usb3_power_on() programs the same register for USB 3.
+Also note this loop now bounds lane programming by `lane` for both
+registers, replacing the old unconditional two-register write (which
+the commit message says "is written even when the PHY has only one
+lane") -- correctly scoped. REF_100_WSSC is cleared alongside FREF_SEL
+in PCIE_PU_PLL_1, which looks right to go with 2/7 having removed that
+same clear from the calibration path.
+
+7/7 power on the combo PHY in USB 3 mode
+---------------------------------------------
+> +static int k1_combo_phy_usb3_power_on(struct phy *phy)
+...
+> +	val = readl(regs + PCIE_PU_PLL_1);
+> +	val &= ~(SSC_DEP_SEL | REF_100_WSSC | FREF_SEL);
+> +	val |= FIELD_PREP(SSC_DEP_SEL, SSC_DEP_5000PPM);
+> +	val |= FIELD_PREP(FREF_SEL, FREF_24M);
+...
+> +static int k1_pcie_phy_power_on(struct phy *phy)
+> +{
+> +	struct k1_pcie_phy *k1_phy = dev_get_priv(phy->dev);
+> +
+> +	if (k1_phy->is_combo && phy->id == PHY_TYPE_USB3)
+> +		return k1_combo_phy_usb3_power_on(phy);
+> +
+> +	return 0;
+> +}
+
+Moving the PLL start from .init to .power_on for the USB 3 case, with
+the commit message's justification that the DWC3 glue powers the PHY
+on only after its own controller clock/reset are up, is a reasonable
+sequencing fix for a problem that would otherwise show up as "xHCI
+reset never completes" exactly as described. k1_pcie_phy_init() is
+correspondingly trimmed to just `return 0` for the USB3 case (the
+k1_combo_phy_sel(k1_phy, true) call that used to run in init is moved
+into k1_combo_phy_usb3_power_on() instead), so the combo PHY mode
+select still happens, just later in the sequence -- consistent.
+CFG_FORCE_RCV_RETRY is explicitly cleared here since it's PCIe-only and
+could have been left set by the calibration or an earlier boot stage;
+good defensive touch given 2/7 and 6/7 both deal with that same bit.
+PLL_TIMEOUT_US reuses the existing PCIe timeout constant for the USB 3
+wait -- worth a line in the commit message on whether the lock time
+budget is known to be the same for both modes, though I have no reason
+to think it isn't given the hardware is the same PLL.
+
+Overall this all tracks the Linux driver closely and each patch is
+scoped to one specific bug, which makes it easy to review in isolation
+and makes sense as 7 separate patches rather than one squash. No
+Reviewed-by/Acked-by/Tested-by tags have been given yet. You did follow
+up on this thread confirming testing on a second board, an OrangePi
+R2S (K1, 2 GiB, booting from eMMC): combo PHY calibrates and switches
+to USB 3 with the PLL locking and xHCI starting there as well, though
+with nothing plugged in to confirm SuperSpeed enumeration on that board
+and PCIe not being exercised there. Given that and the OrangePi RV2
+testing from the cover letter, this looks close to ready -- please
+send a v2 addressing the small items above (or reply here if you think
+they don't need changes), and it would help to also note the R2S
+results in the v2 cover letter alongside the RV2 ones.
+
+Thanks,
+Leo

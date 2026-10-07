@@ -1,0 +1,186 @@
+From mboxrd@z Thu Jan  1 00:00:00 1970
+From: Leo Liang <leo.liang@sifive.com>
+To: u-boot@lists.u-boot-project.org
+Cc: Huan Zhou <pericycle.cc@gmail.com>, Eric Chung <eric.chung@riscstar.com>,
+ Neil Armstrong <neil.armstrong@linaro.org>, Yixun Lan <dlan@kernel.org>,
+ Tom Rini <trini@konsulko.com>, u-boot-spacemit@groups.io
+Subject: Re: [PATCH 0/9] pci: spacemit: fixes for the K1 PCIe host driver
+In-Reply-To: <cover.1790975598.git.DaveWK225@protonmail.com>
+References: <cover.1790975598.git.DaveWK225@protonmail.com>
+Date: Tue, 07 Oct 2026 00:00:00 +0000
+Content-Type: text/plain; charset=utf-8
+
+Hi Dave,
+
+Thanks for the series; the bring-up ordering fixes and the "don't fail
+the probe on a down link" change both look like real improvements over
+the current driver. Went through all 9 patches against the actual
+diffs; comments inline per patch.
+
+Patch 1/9 - power the slot from vpcie3v3-supply:
+
+    +=09ret =3D spacemit_pcie_get_vpcie3v3(dev, port, &pci->vpcie3v3);
+    +=09if (ret) {
+    +=09=09dev_warn(dev, "vpcie3v3 supply not available: %d\n", ret);
+    +=09=09pci->vpcie3v3 =3D NULL;
+    +=09}
+    ...
+    +=09if (pci->vpcie3v3) {
+    +=09=09ret =3D regulator_set_enable_if_allowed(pci->vpcie3v3, true);
+    +=09=09if (ret) {
+    +=09=09=09dev_err(dev, "failed to enable vpcie3v3 supply: %d\n", ret);
+    +=09=09=09return ret;
+    +=09=09}
+    +=09}
+
+Lookup failures and enable failures are handled with deliberately
+different severities (warn-and-continue vs. fail probe), which matches
+the commit message's reasoning about always-on fixed regulators without
+a driver built in. That asymmetry is fine. One thing to check: once
+vpcie3v3 is enabled, nothing later in pcie_dw_spacemit_probe() disables
+it again if a later step fails (generic_phy_init(), pcie_dw_setup_host(),
+the iATU setup in 4/9). Not a new problem introduced by this patch, but
+worth deciding whether probe failure after this point should leave the
+slot powered or not.
+
+Patch 2/9 - hold the PHY interface in reset until link start:
+
+    -=09=09reg &=3D ~(u32)APP_HOLD_PHY_RST;
+    -=09=09spacemit_pcie_writel(pci, PCIECTRL_K1X_CONF_DEVICE_CMD, reg);
+
+Straightforward removal of the premature deassert, matching Linux's and
+FreeBSD's sequencing. No issues.
+
+Patch 3/9 - soft reset the controller before bring-up:
+
+    +=09reg =3D spacemit_pcie_readl(pci, PCIE_CTRL_LOGIC);
+    +=09spacemit_pcie_writel(pci, PCIE_CTRL_LOGIC, reg | PCIE_SOFT_RESET);
+    +=09spacemit_pcie_readl(pci, PCIE_CTRL_LOGIC);
+    +=09mdelay(2);
+    +=09spacemit_pcie_writel(pci, PCIE_CTRL_LOGIC, reg & ~PCIE_SOFT_RESET);
+
+spacemit_pcie_toggle_soft_reset() is called before
+clk_enable_bulk(&pci->clks) / reset_deassert_bulk(&pci->rsts). Since
+PCIE_CTRL_LOGIC lives in the APMU control logic block rather than the
+DBI register space, that is presumably fine, but it would help to say
+in the commit message (or a comment) that this register is reachable
+independent of the pcie clocks/resets this driver otherwise gates
+register access on - a reviewer can't tell that from the diff alone.
+Read-modify-write using the cached `reg` for the final clear is correct
+here since nothing else touches PCIE_CTRL_LOGIC in between.
+
+Patch 4/9 - check clock, reset and iATU setup results:
+
+    +=09ret =3D reset_deassert_bulk(&pci->rsts);
+    +=09if (ret) {
+    +=09=09dev_err(dev, "failed to deassert resets: %d\n", ret);
+    +=09=09clk_disable_bulk(&pci->clks);
+    +=09=09return ret;
+    +=09}
+    ...
+    +=09if (ret)
+    +=09=09return -EIO;
+
+Good catch overall, and the clock/reset pair correctly unwinds
+clk_enable_bulk() when reset_deassert_bulk() fails. But the new
+iATU check at the end just returns -EIO without disabling clocks or
+re-asserting resets, unlike the error path two hunks above in the same
+function - probe error handling ends up inconsistent within one
+function. Given 1/9 leaves vpcie3v3 enabled on later failures too, this
+driver doesn't really do unwind-on-error anywhere past this point; if
+that's accepted as out of scope, it's at least worth a one-line note in
+the commit message.
+
+Patch 5/9 - report link up from the link status register:
+
+    -=09val =3D readl(pci->dw.dbi_base + PCIE_PORT_DEBUG0);
+    -=09val &=3D PORT_LOGIC_LTSSM_STATE_MASK;
+    +=09val =3D spacemit_pcie_phy_ahb_readl(pci, K1X_PHY_AHB_LINK_STS);
+    +=09return (val & SMLH_LINK_UP) && (val & RDLH_LINK_UP);
+
+Matches Linux/FreeBSD exactly (SMLH + RDLH), and cleanly drops the now
+dead PORT_LOGIC_LTSSM_STATE_* defines from the header. No issues.
+
+Patch 6/9 - do not force the link to 2.5 GT/s:
+
+    +=09if (speed) {
+    +=09=09lnkcap =3D readl(cap + PCI_EXP_LNKCAP);
+    +=09=09lnkcap &=3D ~PCI_EXP_LNKCAP_SLS;
+    +=09=09lnkcap |=3D speed;
+    ...
+    +=09pcie->max_link_speed =3D dev_read_u32_default(dev, "max-link-speed", 0);
+    +=09if (pcie->max_link_speed > LINK_SPEED_GEN_4) {
+
+Finding the registers through pcie_dw_find_capability() instead of the
+hardcoded 0x7c/0xa0 offsets is the right fix, and gating the write on
+"speed" being nonzero correctly preserves the hardware default when
+max-link-speed isn't set. The upper-bound check against
+LINK_SPEED_GEN_4 is reasonable; no issues.
+
+Patch 7/9 - do not advertise ASPM L1:
+
+    +=09clrbits_le32(cap + PCI_EXP_LNKCAP, PCI_EXP_LNKCAP_ASPM_L1);
+
+This is applied unconditionally to every K1 port, for every board,
+citing NVMe drives that error out with L1 enabled. Linux's driver does
+the same unconditionally, so this matches upstream, but it does mean
+boards/drives that are fine with L1 (and would benefit from it) lose
+that option with no way to opt back in via the device tree. Given this
+is a direct port of a known Linux workaround I'm fine with it as-is,
+but flagging it in case there's an appetite for gating it on a
+DT quirk property instead of hardcoding it for all K1 ports.
+
+Patch 8/9 - set the link width from num-lanes:
+
+    +=09pcie->num_lanes =3D dev_read_u32_default(dev, "num-lanes", 0);
+    +=09dw_pcie_link_set_max_link_width(&pci->dw, pci->num_lanes);
+
+Unlike max-link-speed in 6/9, there's no validation here: a bogus
+num-lanes value in the device tree (anything other than 1/2/4/8/16, or
+a typo like 3) is passed straight to
+dw_pcie_link_set_max_link_width() with no bounds check before it
+reaches the hardware. Worth adding the same kind of sanity check 6/9
+added for max-link-speed, or confirming dw_pcie_link_set_max_link_width()
+already validates/clamps internally.
+
+Patch 9/9 - do not fail the probe when the link is down:
+
+    +=09if (!pcie_dw_spacemit_pcie_link_up(pci))
+    +=09=09printf("PCIE-%d: Link down\n", dev_seq(dev));
+    +=09else
+    +=09=09printf("PCIE-%d: Link up (Gen%d-x%d, Bus%d)\n", ...);
+    ...
+    +=09if (PCI_BUS(bdf) !=3D pci->dw.first_busno && !is_link_up(pci)) {
+    +=09=09*valuep =3D pci_get_ff(size);
+    +=09=09return 0;
+    +=09}
+
+Matches dw_pcie_other_conf_map_bus() semantics and avoids the repeated
+one-second re-probe penalty described in the commit message - good
+change. The one concern: probe() now always returns 0 whether the slot
+is empty or whether bring-up silently failed for a real reason (bad
+PERST# timing, misconfigured clocks that still happen to "enable"
+without an actual functional link, etc). Right now both cases produce
+the same "Link down" printf() and the same successful probe, so a real
+misconfiguration on a populated slot looks identical to an empty slot
+in the log. Consider dev_warn()/log_warning() instead of (or in
+addition to) printf() so a down link is visible through normal U-Boot
+log level filtering and distinguishable from "I expected this slot to
+be empty."
+
+Verdict:
+
+None of these 9 patches carry any Reviewed-by, Acked-by, or Tested-by
+tags yet. The series structure (one logical fix per patch, in bring-up
+order) is good and I wouldn't ask for it to be split or squashed
+differently. The only patch I'd really want addressed before a v2 is
+8/9 (missing num-lanes validation), with 4/9's inconsistent iATU error
+unwind and 9/9's silent-masking concern as secondary asks; 7/9's
+unconditional ASPM-L1 removal is a question rather than a blocker.
+
+Dave - can you send a v2 with at least the num-lanes validation added,
+and reply with your thinking on the iATU unwind and the down-link
+logging? Happy to test again once that's in.
+
+Thanks,
+Leo

@@ -1,0 +1,58 @@
+From mboxrd@z Thu Jan  1 00:00:00 1970
+From: Leo Liang <leo.liang@sifive.com>
+Date: Wed, 07 Oct 2026 00:00:00 +0000
+Subject: Re: [PATCH v3 4/4] doc: spacemit: k3: Add Pico-ITX board
+To: u-boot@lists.u-boot-project.org
+Cc: Yao Zi <me@ziyao.cc>, Tim Ouyang <tim609@andestech.com>,
+ Tom Rini <trini@konsulko.com>,
+ Michal Simek <michal.simek@amd.com>, Raymond Mao <raymond.mao@riscstar.com>,
+ Hiago De Franco <hfranco@baylibre.com>,
+ Junhui Liu <junhui.liu@pigmoral.tech>, Yixun Lan <dlan@kernel.org>
+In-Reply-To: <20261003-00-basic-spacemit-k3-v3-4-dea68cd1bd7d@kernel.org>
+References: <20261003-00-basic-spacemit-k3-v3-0-dea68cd1bd7d@kernel.org>
+ <20261003-00-basic-spacemit-k3-v3-4-dea68cd1bd7d@kernel.org>
+
+On the v3 build instructions:
+
++1. Install the SpacemiT riscv cross compile toolchain_, or skip it if riscv toolchain is installed.
++
++.. _toolchain: https://archive.spacemit.com/toolchain/
++
++2. Setup cross compilation environment variable:
++
++.. code-block:: console
++
++   export CROSS_COMPILE=<riscv64 toolchain prefix, e.g /opt/spacemit/bin/riscv64-unknown-linux-gnu->
+
+I want to second E Shattow's earlier point here, since it hasn't made it
+into v3 yet: the wording still reads as vendor-specific toolchain
+advertisement ("Install the SpacemiT riscv cross compile toolchain_" plus
+a SpacemiT-hosted download link and a CROSS_COMPILE example hardcoded to
+/opt/spacemit/...). U-Boot docs generally keep the toolchain step generic,
+e.g. something like:
+
+  1. Add a RISC-V toolchain to your PATH.
+  2. Set a cross-compilation environment variable if needed, e.g.::
+
+        export CROSS_COMPILE=riscv64-linux-gnu-
+
+Yixun acknowledged this with "Ok" in that thread, but a v4 with the fix
+hasn't been posted yet, so flagging it again here to make sure it isn't
+lost.
+
+Two smaller things I noticed while reading the rest of the diff:
+
+- "Testing" section: "Thus please test with fasboot command via USB
+  download." - typo, should be "fastboot".
+
+- "Booting" section header uses a "~~~~~~~" underline immediately followed
+  by a "Sample boot log" sub-header with a longer "~~~~~~~~~~~~~~~"
+  underline, so "Booting" ends up as an empty section title with no body
+  text before dropping into the sub-section. Either fold "Sample boot log"
+  into "Booting" directly, or give "Booting" its own introductory sentence
+  before the sub-heading.
+
+Patches 1-3/4 of this series already carry E Shattow's Reviewed-by and
+have been applied; this 4/4 doc patch is the only one being held back.
+
+Please send a v4 of just this patch with the toolchain wording genericized.

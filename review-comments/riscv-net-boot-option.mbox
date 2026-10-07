@@ -1,0 +1,38 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Nikita Shubin <nikita.shubin@maquefel.me>
+Cc: u-boot@lists.u-boot-project.org, Yao Zi <me@ziyao.cc>,
+ Tim Ouyang <tim609@andestech.com>, Leo Liang <leo.liang@sifive.com>,
+ Tom Rini <trini@konsulko.com>
+Subject: Re: [PATCH] arch/riscv: Allow booting from NET
+Message-Id: <review-riscv-net-boot-option@andestech.com>
+In-Reply-To: <20260904-riscv_add_net_boot_option-v1-1-125c3edbdb1a@maquefel.me>
+References: <20260904-riscv_add_net_boot_option-v1-1-125c3edbdb1a@maquefel.me>
+Date: Mon, 05 Oct 2026 11:50:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+This patch only adds BOOT_DEVICE_CPGMAC to the enum in
+arch/riscv/include/asm/spl.h:
+
+  enum {
+          ...
+          BOOT_DEVICE_SMH,
++         BOOT_DEVICE_CPGMAC,
+          BOOT_DEVICE_NONE
+  };
+
+but doesn't appear to include any code that maps a RISC-V SPL boot-source
+register value to BOOT_DEVICE_CPGMAC (e.g. in a board/SoC's
+spl_boot_device() implementation), nor any Kconfig/SPL_NET wiring. Is the
+rest of the net-boot support already present generically in common SPL code
+(net.c's spl_net_load_image() etc.) and this is genuinely the only missing
+piece to let a RISC-V SPL fall through to net boot, or is there a
+board-specific spl_boot_device() patch that should accompany this one so
+BOOT_DEVICE_CPGMAC is actually ever returned/consumed on RISC-V?
+
+Also, BOOT_DEVICE_CPGMAC is named after the CPGMAC peripheral used on some
+non-RISC-V SoCs (e.g. OMAP/AM335x) - was this deliberately reusing the
+existing shared enum value with that semantic (bootrom indicates "boot from
+on-chip Ethernet MAC" generically), or should this use a more RISC-V/board-
+neutral name like BOOT_DEVICE_ETH if one doesn't already exist elsewhere in
+the shared enum?

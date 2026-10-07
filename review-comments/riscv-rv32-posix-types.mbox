@@ -1,0 +1,26 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Gustavo Henrique Nihei <gustavo.nihei@espressif.com>
+Cc: Yao Zi <me@ziyao.cc>, Lukas Auer <lukas.auer@aisec.fraunhofer.de>,
+ Bin Meng <bmeng.cn@gmail.com>, u-boot@lists.u-boot-project.org,
+ Tim Ouyang <tim609@andestech.com>, Leo Liang <leo.liang@sifive.com>,
+ Tom Rini <trini@konsulko.com>, Anton Maklakov <anton@espressif.com>
+Subject: Re: [PATCH] riscv: restore ILP32 size types on RV32
+Message-Id: <review-riscv-rv32-posix-types@andestech.com>
+In-Reply-To: <20260928-for-upstream-riscv-rv32-posix-types-v1-1-6f8a37501ccc@espressif.com>
+References: <20260928-for-upstream-riscv-rv32-posix-types-v1-1-6f8a37501ccc@espressif.com>
+Date: Mon, 05 Oct 2026 12:00:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+Since this restores ILP32 size types for RV32 (undoing what sounds like an
+unintentional regression to LP64-style types on 32-bit RISC-V), could you
+point to the commit that introduced the regression this is restoring from?
+A Fixes: tag would help reviewers and make backporting to stable
+clearer, and it isn't present in this patch as sent.
+
+Also, "restore ILP32 size types" touching POSIX-visible size_t/ssize_t/etc.
+typedefs is exactly the kind of change that can silently break ABI-sensitive
+code (format string mismatches, struct layout in any code assuming the
+previous width) - has this been build-tested across all in-tree RV32
+targets (not just espressif's), and did you check for any new -Wformat
+warnings introduced/fixed by the type width change?

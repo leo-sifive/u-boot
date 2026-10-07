@@ -1,0 +1,41 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Nathan Whitehorn <nwhitehorn@pa.msu.edu>
+Cc: u-boot@lists.u-boot-project.org, Jamie Gibbons <Jamie.Gibbons@microchip.com>,
+ Conor Dooley <Conor.Dooley@microchip.com>
+Subject: Re: [PATCH v3] riscv: mpfs: Read and store FPGA design information on MPFS hardware.
+Message-Id: <review-mpfs-fpga-design-info@andestech.com>
+In-Reply-To: <20260827204538.16222-1-nwhitehorn@pa.msu.edu>
+References: <20260827204538.16222-1-nwhitehorn@pa.msu.edu>
+Date: Mon, 05 Oct 2026 11:30:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+There appears to be a real bug in board/microchip/mpfs_generic/mpfs_generic.c:
+
+  u8 device_serial_number[16] = {0};
+  ...
+  ret = mpfs_syscontroller_read_design_info(sys_serv_priv, designid,
+                                            &designver, &designbacklevel);
+  ...
+  for (idx = 0; idx < 16; idx++)
+          sprintf(&serialstring[2*idx], "%02x", device_serial_number[idx]);
+
+  env_set("serial_number", serialstring);
+
+device_serial_number[] is declared and zero-initialized but, in this hunk,
+is never populated from the mailbox before being hex-encoded into
+serial_number - it's not an output parameter of
+mpfs_syscontroller_read_design_info() (which only fills designid/
+designver/designbacklevel). Unless device_serial_number is filled earlier
+in board_late_init() by a different call (e.g. mpfs_syscontroller_read_
+sernum(), which exists per include/mpfs-mailbox.h) that isn't shown in this
+diff context, env_set("serial_number", ...) will always report all-zero
+bytes ("00000000000000000000000000000000"). Can you confirm
+device_serial_number is actually populated earlier in the function (this
+diff is a hunk inside a larger existing function, so it's possible this is
+a non-issue if an earlier unchanged line already calls read_sernum()) -
+if so no action needed, just want it confirmed since the new design_id/
+design_ver output is otherwise clean and well laid out.
+
+Also: CMD_DESIGN_INFO is now a real #define per Jamie Gibbons' v3 suggestion
+- good, that addresses the earlier magic-number concern.

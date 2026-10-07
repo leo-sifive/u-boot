@@ -1,0 +1,38 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Eric Chung <eric.chung@riscstar.com>
+Cc: u-boot-spacemit@groups.io, u-boot@lists.u-boot-project.org,
+ Tim Ouyang <tim609@andestech.com>, Leo Liang <leo.liang@sifive.com>,
+ Yao Zi <me@ziyao.cc>, Huan Zhou <pericycle.cc@gmail.com>,
+ Tom Rini <trini@konsulko.com>, Yixun Lan <dlan@kernel.org>
+Subject: Re: [PATCH v2 1/2] pinctrl: k1: fix drive strength configuration
+Message-Id: <review-spacemit-k1-pinctrl-fixes@andestech.com>
+In-Reply-To: <20260906-pinctrl-v2-1-729da680092c@riscstar.com>
+References: <20260906-pinctrl-v2-0-729da680092c@riscstar.com>
+ <20260906-pinctrl-v2-1-729da680092c@riscstar.com>
+Date: Mon, 05 Oct 2026 10:50:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+Patch 1/2 already carries Yixun Lan's Reviewed-by and the FIELD_PREP() fix
+for clrsetbits_le32(addr, PAD_DRIVE, ds) is a real bug fix - previously `ds`
+was written unshifted into PAD_DRIVE's bit position, which would corrupt the
+register unless PAD_DRIVE happened to start at bit 0. Good catch.
+
+One thing worth double-checking: spacemit_pinmux_property_set() now returns
+`pin` instead of 0 on success:
+
+  ret = spacemit_pinmux_set(dev, pin, mux);
+  if (ret < 0)
+          return ret;
+  return pin;
+
+Is this return value actually consumed by a caller that needs the pin
+number (e.g. for group-apply ordering), or just conventionally expected to
+be "last successful pin" similar to some pinctrl frameworks? If no caller
+inspects it, returning pin instead of 0 is harmless but worth a comment
+explaining why.
+
+Patch 2/2 (IO power domain configuration support) - wasn't fully visible in
+this review pass; please confirm it doesn't regress the io_type handling
+touched here, since both patches modify the same io_pins[] external-pin
+logic (priv->io_pins[i].io_type != IO_TYPE_EXTERNAL check).

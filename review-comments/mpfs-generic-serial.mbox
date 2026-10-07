@@ -1,0 +1,76 @@
+From mboxrd@z Thu Jan  1 00:00:00 1970
+From: Leo Liang <leo.liang@sifive.com>
+To: U-Boot Mailing List <u-boot@lists.u-boot-project.org>
+Cc: Conor Dooley <conor.dooley@microchip.com>,
+ Jamie Gibbons <jamie.gibbons@microchip.com>, Tom Rini <trini@konsulko.com>
+Subject: Re: [PATCH] board: microchip: mpfs_generic: Allow serial number read failures
+In-Reply-To: <20261005004902.3441895-1-bin.meng@processmission.com>
+References: <20261005004902.3441895-1-bin.meng@processmission.com>
+Date: Mon, 05 Oct 2026 23:59:00 +0000
+
+Thanks for the patch. Comments on the actual diff:
+
+> +static bool mac_addr_valid;
+...
+> -		printf("Cannot read device serial number\n");
+> -		return -EINVAL;
+> +		printf("Warning: Cannot read device serial number\n");
+> +		goto out;
+
+1. Logging: the message is still printed, now prefixed with "Warning:"
+   instead of returning an error, which is a reasonable way to signal
+   "this is now non-fatal but still worth telling the user about". One
+   nit: this uses printf() at default level while most other failure
+   paths in board_late_init() in this file appear to just printf() too
+   (not log_err/log_warning), so this is at least consistent with the
+   existing style in this function, even if it's not using the
+   log_* macros framework.
+
+2. Fallback/default serial: no fallback serial number is substituted
+   into mac_addr on failure -- mac_addr stays whatever it was
+   zero-initialized to (static array, so all-zero). That's fine
+   *because* of the new mac_addr_valid flag; the all-zero mac_addr is
+   never actually applied to the device tree since:
+
+   > +	if (!mac_addr_valid)
+   > +		return 0;
+
+   in ft_board_setup() short-circuits before the fdt_setprop() call
+   that would otherwise write the (invalid/zero) mac_addr into
+   "local-mac-address". This correctly prevents propagating a garbage
+   all-zero MAC to the DT. Good catch handling that side effect of the
+   early-exit.
+
+3. Control flow / "goto out": the new `out:` label falls through to
+   `mpfs_syscontroller_process_dtbo(sys_serv_priv);` before `return 0;`
+   -- so DT overlay processing still happens on the failure path, which
+   matches the stated intent ("skip the MAC updates while still
+   processing device tree overlays"). Confirmed this is what the diff
+   actually does: the `mac_addr_valid = true;` assignment sits right
+   before the `out:` label, so it's skipped by the goto but the shared
+   tail (dtbo processing + return 0) still executes. That looks
+   correct.
+
+4. Return code consistency: board_late_init() now *always* returns 0
+   on this path (both success and serial-read-failure cases), whereas
+   previously it returned -EINVAL on failure. Is that an intentional
+   part of "should not halt boot", or could callers of
+   board_late_init() that check the return value for other error
+   conditions be affected? Worth a one-line note in the commit message
+   confirming board_late_init()'s return value isn't checked
+   meaningfully elsewhere for this board, since the error swallowing
+   is now total (function always succeeds past this point).
+
+5. Minor: mac_addr_valid is function-static-file-scope and
+   implicitly initialized to false, which is correct for the "treat
+   unset as invalid" default register, consistent with mac_addr's
+   existing zero-init pattern in the same file.
+
+No Reviewed-by or other review tags have been applied to this patch
+yet.
+
+Verdict: Logic is sound and the mac_addr_valid guard correctly
+prevents writing a bogus zeroed MAC into the FDT on failure; would
+like the commit message to clarify point 4 (whether always-returning-0
+from board_late_init() has any downstream impact) before this is
+ready to pick up.

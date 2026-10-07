@@ -1,0 +1,38 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Zixian Zeng <sycamoremoon376@gmail.com>
+Cc: u-boot@lists.u-boot-project.org, u-boot-spacemit@groups.io,
+ Tom Rini <trini@konsulko.com>, Yixun Lan <dlan@kernel.org>,
+ Eric Chung <eric.chung@riscstar.com>
+Subject: Re: [PATCH 1/3] net: k1: add Ethernet MAC driver
+Message-Id: <review-spacemit-k1-emac@andestech.com>
+In-Reply-To: <20261002-b4-k1-emac-v1-1-e1b6806b018a@gmail.com>
+References: <20261002-b4-k1-emac-v1-0-e1b6806b018a@gmail.com>
+ <20261002-b4-k1-emac-v1-1-e1b6806b018a@gmail.com>
+Date: Mon, 05 Oct 2026 10:40:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+Thanks for porting this from the Linux dwmac-style K1 EMAC driver.
+
+A few questions on the new drivers/net/spacemit/k1_emac.c:
+
+- K1_DLINE_MAX_CODE is defined as "(FIELD_MAX(K1_APMU_TX_DLINE_CODE) - 1)".
+  Is the "-1" intentional (reserving the max code value), or is this meant
+  to just be FIELD_MAX(...)? A short comment explaining why one less than
+  the field's max is used for the delay line would help future maintainers.
+
+- The descriptor structures (struct k1_emac_desc) are plain u32 fields
+  written/read directly without any readl/writel or endian-conversion
+  helpers visible in this hunk - can you confirm these descriptors are
+  accessed through proper I/O accessors (and barriers/cache
+  flush/invalidate for ARCH_DMA_MINALIGN-aligned DMA buffers) elsewhere in
+  the file, given this is a DMA-coherent-by-convention ring buffer design?
+
+- K1_TX_DESC_COUNT is 4 while K1_RX_DESC_COUNT is 16 - is that asymmetry
+  deliberate (matching the Linux driver), or just a smaller TX ring for
+  u-boot's typically short TFTP/NFS bursts?
+
+- Link: tag points to a Linux lore thread, not a kernel commit; have the
+  register definitions and timing constants (K1_TX_TIMEOUT_MS,
+  K1_MDIO_TIMEOUT_MS) been validated against real K1 hardware rather than
+  just transcribed from the Linux driver?

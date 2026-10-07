@@ -1,0 +1,208 @@
+From mboxrd@z Thu Jan  1 00:00:00 1970
+From: "Leo Liang <leo.liang@sifive.com>"
+To: Zhuxu Ran <zhuxu_ran@zohomail.com>, u-boot@lists.u-boot-project.org
+Cc: Yao Zi <me@ziyao.cc>, Tom Rini <trini@konsulko.com>,
+ Johan Jonker <jbx6244@gmail.com>, Alexander Koch <akoch@initse.com>,
+ Kongyang Liu <seashell11234455@gmail.com>,
+ Hiago De Franco <hfranco@baylibre.com>,
+ Thomas Bonnefille <thomas.bonnefille@bootlin.com>,
+ Quentin Schulz <quentin.schulz@cherry.de>,
+ Peter Robinson <pbrobinson@gmail.com>,
+ Leo Yu-Chi Liang <leo.liang@sifive.com>,
+ Casey Connolly <casey.connolly@linaro.org>,
+ Varadarajan Narayanan <varadarajan.narayanan@oss.qualcomm.com>,
+ Sumit Garg <sumit.garg@oss.qualcomm.com>, Heiko Stuebner <heiko@sntech.de>,
+ Marek Vasut <marek.vasut+renesas@mailbox.org>,
+ Marek Vasut <marex@nabladev.com>,
+ Ilias Apalodimas <ilias.apalodimas@linaro.org>
+Subject: Re: [PATCH v2 0/3] rtc: cv1800b: Use the RTC node for time and system reset
+In-Reply-To: <20261006-cv18xx-rtc-sysreset-v2-0-67872888384e@zohomail.com>
+References: <20261006-cv18xx-rtc-sysreset-v2-0-67872888384e@zohomail.com>
+Date: Wed, 07 Oct 2026 09:30:00 -0700
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Hi Zhuxu,
+
+Thanks for the v2, the overall direction (sharing one RTC devicetree node
+between the RTC and sysreset drivers via regmap instead of hardcoding
+physical addresses in the sysreset driver) is a nice cleanup. A few
+comments below, mostly about error handling completeness and the
+bind/probe relationship between patches 1 and 3.
+
+No Reviewed-by/Acked-by tags have been picked up yet on this v2, so
+please keep that in mind for v3.
+
+=== Patch 1/3: rtc: cv1800b: Add seconds counter support ===
+
+> +	priv->regmap = devm_regmap_init(dev, NULL, NULL, NULL);
+> +	if (IS_ERR(priv->regmap))
+> +		return PTR_ERR(priv->regmap);
+
+This calls devm_regmap_init() with a NULL regmap_config, which means the
+regmap width/stride come from the driver-model defaults and the full
+"reg" range of the devicetree node. That's fine as long as the DT node
+covers every offset this driver (and the sysreset driver bound onto the
+same node) touches, up to MACRO_RG_SET_T (0x1498) here and
+RTC_EN_WARM_RST_REQ (0x10cc) in patch 3. Please double check the actual
+cv1800b RTC node's "reg" size is large enough for both consumers -- it's
+not visible in this series since no devicetree patch is included.
+
+> +static int cv1800b_rtc_bind(struct udevice *dev)
+> +{
+> +	if (!CONFIG_IS_ENABLED(SYSRESET_CV1800B))
+> +		return 0;
+> +
+> +	return device_bind_driver_to_node(dev, "cv1800b_sysreset",
+> +					  "sysreset", dev_ofnode(dev), NULL);
+> +}
+
+Binding the sysreset device onto the *same* ofnode as the RTC device
+(dev_ofnode(dev), not a child node) is a deliberate trick to get a
+second udevice with its own regmap pointed at the same register block.
+This works in U-Boot, but it's worth spelling out in the commit message
+since it's non-obvious, and it means two independent regmap instances
+end up mapping the same physical range -- there's no shared regmap
+or locking between the RTC and sysreset accesses. That's probably fine
+given actual usage patterns, but please confirm there's no possibility
+of concurrent access (e.g. RTC read racing a reset request) that would
+want a single shared regmap instead of two independently-probed ones.
+
+> +	ret = clk_get_by_name(dev, "rtc", &priv->clk);
+> +	if (ret)
+> +		return ret;
+> +
+> +	return clk_enable(&priv->clk);
+
+Nit: if clk_enable() fails there's no clk_free()/clk_disable() cleanup
+path, but since this is a bool Kconfig driver that's unlikely to be a
+real issue in practice -- just flagging for completeness since the rest
+of the driver is careful about regmap error propagation.
+
+> +	ret = regmap_read(priv->regmap, SEC_PULSE_GEN, &value);
+> +	if (ret)
+> +		return ret;
+> +	if (value & SEL_SEC_PULSE)
+> +		return -EINVAL;
+
+Should this return -EINVAL silently, or would -ENODATA/log a message be
+more useful to callers (e.g. "date" command on an unprogrammed RTC)?
+Not a blocker, just a readability/debuggability suggestion matching
+what other U-Boot RTC drivers do when the clock hasn't been set yet.
+
+=== Patch 2/3: riscv: sophgo: Enable RTC-backed system reset ===
+
+> -	if (IS_ENABLED(CONFIG_SYSRESET_CV1800B))
+> -		device_bind_driver(gd->dm_root, "cv1800b_sysreset", "sysreset", NULL);
+> -
+>  	if (IS_ENABLED(CONFIG_NET_LEGACY))
+>  		cv1800b_ephy_init();
+
+Removing the board-level manual bind is correct now that patch 1 makes
+the RTC driver bind the sysreset child itself. But this creates a
+cross-patch ordering dependency: between patch 2 and patch 3 applied
+alone (e.g. bisection), CONFIG_SYSRESET_CV1800B could still be set
+without CONFIG_RTC_CV1800B generating the bind call, since patch 3 is
+what adds "depends on RTC_CV1800B" to Kconfig. Worth double-checking
+`git bisect`/incremental apply doesn't leave milkv_duo with sysreset
+silently unbound between patch 2 and patch 3 landing -- it would be
+safer if the Kconfig dependency change in patch 3 were folded into
+patch 1, since patch 1 is what introduces the alternate bind mechanism
+that patch 2 relies on removing the board_init() call.
+
+> +CONFIG_DM_RTC=y
+> +CONFIG_RTC_CV1800B=y
+
+These three defconfigs add RTC_CV1800B but the diff doesn't show
+CONFIG_SYSRESET_CV1800B being added/retained -- please confirm in the
+full defconfig (not shown in this hunk) that SYSRESET_CV1800B is still
+set for all three boards now that it depends on RTC_CV1800B, otherwise
+power-off/reset would silently regress on affected boards.
+
+=== Patch 3/3: sysreset: cv1800b: Use the RTC device node for register access ===
+
+> +static int cv1800b_sysreset_request(struct udevice *dev, enum sysreset_t type)
+> +{
+> +	struct cv1800b_sysreset_priv *priv = dev_get_priv(dev);
+> +	int ret;
+> +
+> +	if (type >= SYSRESET_COUNT)
+> +		return -EINVAL;
+
+Good addition -- the previous code indexed reset_info[] with an
+unchecked `type`, so this closes a real out-of-bounds read for
+sysreset types that aren't in the array (e.g. SYSRESET_POWER_ON).
+
+> +	ret = regmap_write(priv->regmap, reset_info[type].pre_req_reg, 1);
+> +	if (ret)
+> +		return ret;
+> +
+> +	ret = regmap_write(priv->regmap, RTC_CTRL_UNLOCKKEY,
+> +			   CTRL_UNLOCKKEY_MAGIC);
+> +	if (ret)
+> +		return ret;
+> +
+> +	ret = regmap_write(priv->regmap, RTC_CTRL,
+> +			   0xffff0800 | reset_info[type].req_bit);
+> +	if (ret)
+> +		return ret;
+
+Nice, this now propagates regmap errors on every step instead of the
+previous fire-and-forget writel() calls -- matches the commit message's
+"propagate register access errors" claim.
+
+> -static const struct udevice_id cv1800b_sysreset_ids[] = {
+> -	{ .compatible = "sophgo,cv1800b-sysreset", },
+> -	{},
+> -};
+> -
+>  U_BOOT_DRIVER(sysreset_cv1800b) = {
+>  	.name = "cv1800b_sysreset",
+> -	.id	  = UCLASS_SYSRESET,
+> -	.ops  = &cv1800b_sysreset,
+> -	.of_match = cv1800b_sysreset_ids
+> +	.id = UCLASS_SYSRESET,
+> +	.probe = cv1800b_sysreset_probe,
+> +	.ops = &cv1800b_sysreset,
+> +	.priv_auto = sizeof(struct cv1800b_sysreset_priv),
+>  };
+
+Removing of_match entirely means this driver can now *only* ever be
+instantiated via device_bind_driver_to_node() from patch 1 -- it will
+never match a devicetree node directly even if someone still has
+"sophgo,cv1800b-sysreset" in an out-of-tree DTS. That's intentional
+given the new design, but please mention this behavioral/ABI change
+explicitly in the commit message (it's a removed compatible string,
+which is the kind of thing that's easy to miss when reading just the
+diffstat), and double check there's no in-tree devicetree still using
+that compatible that would now silently fail to bind.
+
+> config SYSRESET_CV1800B
+> -	bool "Enable support for Sophgo cv1800b System Reset"
+> +	bool "Enable support for Sophgo CV1800B system reset"
+> +	depends on RTC_CV1800B
+
+Since RTC_CV1800B already does `select REGMAP`, SYSRESET_CV1800B gets
+REGMAP transitively through the "depends on" -- that's fine, but note
+it only works because both options are reachable in the same Kconfig
+pass; if SYSRESET_CV1800B ever gains an independent "select REGMAP" by
+mistake in a future patch it'd be redundant but harmless. No action
+needed here, just flagging the implicit dependency for anyone touching
+this later.
+
+=== Summary ===
+
+- Please confirm the devicetree "reg" range for the shared RTC node
+  covers all registers touched by both the RTC and sysreset drivers.
+- Consider folding the Kconfig "depends on RTC_CV1800B" into patch 1
+  (or reordering) to avoid an intermediate bisection state where
+  SYSRESET_CV1800B can be enabled without the new bind mechanism.
+- Confirm SYSRESET_CV1800B is still enabled in all three defconfigs
+  touched by patch 2.
+- Please call out the removed sysreset of_match/compatible string as
+  a user-visible behavioral change in the patch 3 commit message.
+
+Overall: needs a v3 (or author confirmation) addressing the above before merge.
+
+Thanks,
+Leo

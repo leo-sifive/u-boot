@@ -1,0 +1,40 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Anirudh Srinivasan <asrinivasan@oss.tenstorrent.com>
+Cc: u-boot@lists.u-boot-project.org, Yao Zi <me@ziyao.cc>,
+ Tom Rini <trini@konsulko.com>, Leo Liang <leo.liang@sifive.com>,
+ Quentin Schulz <quentin.schulz@cherry.de>,
+ Marek Vasut <marek.vasut+renesas@mailbox.org>
+Subject: Re: [PATCH v2] iommu: Add RISC-V IOMMU driver
+Message-Id: <review-riscv-iommu-driver@andestech.com>
+In-Reply-To: <20260825-riscv_iommu-v2-1-e0b816494b1a@oss.tenstorrent.com>
+References: <20260825-riscv_iommu-v2-1-e0b816494b1a@oss.tenstorrent.com>
+Date: Mon, 05 Oct 2026 11:40:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+Minimal, focused driver - only configuring Bare mode is a reasonable scope
+for getting DMA working on Tenstorrent Atlantis, as explained in the cover
+note.
+
+A couple of questions on drivers/iommu/riscv_iommu.c:
+
+- riscv_iommu_probe() reads DDTP, and if it's already in Bare mode returns
+  0 immediately without checking DDTP_BUSY first in that path - actually
+  looking again, the busy-poll happens before the mode switch, so that's
+  fine. But after successfully switching OFF -> BARE and re-polling busy,
+  is there a need to also handle the case where a prior mode's IOMMU state
+  (e.g. a DDT table from a previous untrusted bootloader stage) could leave
+  stale translation state active even though DDTP reports the correct mode
+  bits? Not necessarily a blocker for this minimal driver, just asking
+  whether that's out of scope by design.
+
+- RISCV_IOMMU_DDTP_TIMEOUT is 30000000 (presumably microseconds via
+  readq_poll_timeout) - that's 30 seconds, which seems like a very long
+  worst-case boot stall if the IOMMU never becomes non-busy. Is that
+  timeout value from the RISC-V IOMMU spec's recommended polling window, or
+  just a conservative round number?
+
+- DM_FLAG_VITAL is set on this driver - should probing failure here (e.g.
+  timeout) actually be fatal to boot on platforms where the IOMMU is
+  present but not strictly required for the boot path (e.g. if only some
+  peripherals are gated behind it)? Worth a note on why VITAL was chosen.

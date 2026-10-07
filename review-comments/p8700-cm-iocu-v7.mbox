@@ -1,0 +1,37 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Uros Stajic <uros.stajic@htecgroup.com>
+Cc: u-boot@lists.denx.de, Djordje Todorovic <Djordje.Todorovic@htecgroup.com>,
+ Leo Yu-Chi Liang <ycliang@andestech.com>, Rick Chen <rick@andestech.com>,
+ Chao-ying Fu <cfu@mips.com>
+Subject: Re: [PATCH v7 1/7] riscv: Add initial support for P8700 SoC
+Message-Id: <review-p8700-cm-iocu-v7@andestech.com>
+In-Reply-To: <20260417122213.147529-2-uros.stajic@htecgroup.com>
+References: <20260417122213.147529-1-uros.stajic@htecgroup.com>
+ <20260417122213.147529-2-uros.stajic@htecgroup.com>
+Date: Mon, 05 Oct 2026 12:30:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+This series is now at v7 with 7 patches (initial P8700 SoC support, Boston
+board support, EG20T GPIO driver, PCI Xilinx root-port fix, MIPS GIC syscon
+driver, pch_gbe PHY reset/MAC fallback, and CM/IOCU support), and patch
+01/07 already has a Reviewed-by from Leo Yu-Chi Liang, but across 7
+revisions there do not appear to be any Reviewed-by/Acked-by tags
+accumulated from a second maintainer, nor any visible sign-off from a
+RISC-V or MIPS subsystem maintainer beyond the co-author (Chao-ying Fu).
+
+Given the revision count, could a maintainer (Leo Liang / Rick Chen /
+Tom Rini) confirm whether this series is actively blocked on something
+specific (e.g. awaiting hardware validation, pending comments not yet
+addressed, or simply queue backlog), since v7 with effectively single-
+reviewer engagement after this many iterations suggests it may need
+explicit maintainer attention to either merge or identify what's still
+missing before it can be picked up.
+
+On patch 01/07 itself (arch/riscv/cpu/p8700/cache.c): the cache_loop() macro
+forces the address operand into register a0 via a fixed-register asm
+constraint to encode a custom MCACHE instruction - has this been tested on
+actual P8700 silicon (hart0 GCR/CM programming path plus the per-hart PMP/
+PMA setup in harts_early_init()), or only in simulation? That early-init
+path runs before DRAM is up and is easy to get subtly wrong without
+hardware in hand.

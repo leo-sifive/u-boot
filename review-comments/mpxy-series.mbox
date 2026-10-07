@@ -1,0 +1,133 @@
+From mboxrd@z Thu Jan  1 00:00:00 1970
+From: Leo Liang <leo.liang@sifive.com>
+To: Rahul Pathak <rahul.pathak@oss.qualcomm.com>, u-boot@lists.denx.de
+Cc: anup.patel@oss.qualcomm.com
+Subject: Re: [PATCH 1/3] riscv: Add SBI MPXY generic interface
+In-Reply-To: <20260709175605.1070755-2-rahul.pathak@oss.qualcomm.com>
+References: <20260709175605.1070755-1-rahul.pathak@oss.qualcomm.com>
+ <20260709175605.1070755-2-rahul.pathak@oss.qualcomm.com>
+Date: Wed, 07 Oct 2026 12:00:00 +0000
+Content-Type: text/plain; charset="UTF-8"
+
+Hi Rahul,
+
+Taking the whole series together here (replying on 1/3 since that's where
+most of the core logic lives). A few comments below, in addition to the
+thread Charles already started.
+
+1. Seconding the dead-code concern on ->readattr()
+----------------------------------------------------
+I agree with Charles here:
+
+> +		/* Protocol-specific attributes */
+> +		if (!chan->proto || !chan->proto->readattr)
+> +			return -ENOSYS;
+> +
+> +		ret = sbi_ecall(SBI_EXT_MPXY, SBI_EXT_MPXY_READ_ATTRS,
+> +				chan->channel_id, base_attr_id, attr_count,
+> +				0, 0, 0);
+> +		if (ret.error)
+> +			return -EINVAL;
+> +
+> +		for (i = 0; i < attr_count; i++)
+> +			attrs_buf[i] = le32_to_cpu(shmem[i]);
+
+sbi_mpxy_read_attrs() checks chan->proto->readattr is non-NULL purely as a
+gate, then goes ahead and does the generic ecall + shmem copy itself —
+the actual rpmi_readattr() callback (patch 2/3) is never invoked anywhere.
+Please either call chan->proto->readattr() here for v2, or drop the
+readattr member/callback and the NULL check entirely as Charles suggested.
+Shipping an unused callback plus a dead implementation (rpmi_readattr in
+cmd/riscv/sbi_mpxy_cmd.c) just invites bit-rot.
+
+2. Missing bounds check against shmem_size in message send path
+------------------------------------------------------------------
+sbi_mpxy_read_attrs()/write_attrs() correctly bound attr_count against
+mpxy_ctx.shmem_size:
+
+> +	if (attr_count > mpxy_ctx.shmem_size / sizeof(u32))
+> +		return -EINVAL;
+
+but sbi_mpxy_send_message_with_resp() does not apply the same discipline:
+
+> +	if (tx_len)
+> +		memcpy(shmem, tx, tx_len);
+...
+> +	if (rx) {
+> +		rx_bytes = ret.value;
+> +		if (rx_bytes > max_rx_len)
+> +			return -ENOSPC;
+> +		memcpy(rx, shmem, rx_bytes);
+
+tx_len is only checked against the caller-provided max_rx_len/tx_len, never
+against mpxy_ctx.shmem_size. A caller with a tx_len larger than the actual
+shmem window (e.g. via sbi_mpxy_send(), which forwards up to
+SBI_MPXY_MAX_MSG_WORDS = 64 words = 256 bytes regardless of the real
+negotiated shmem size from SBI_EXT_MPXY_GET_SHMEM_SIZE) will overflow the
+allocated shmem buffer on the memcpy(shmem, tx, tx_len) above. Likewise,
+rx_bytes comes straight from firmware (ret.value) and is only capped by
+max_rx_len, not by shmem_size, so a misbehaving/buggy SBI implementation
+can cause an out-of-bounds read of the shmem allocation on the
+memcpy(rx, shmem, rx_bytes) call. Please clamp both tx_len and rx_bytes to
+mpxy_ctx.shmem_size (or expose shmem_size and check it in the command
+layer) before touching the buffer.
+
+3. No cleanup of shmem allocation on later probe failures
+--------------------------------------------------------------
+mpxy_setup_shmem() correctly frees the shmem buffer if SET_SHMEM fails:
+
+> +	if (ret.error) {
+> +		log_err("sbi_mpxy: SET_SHMEM failed (%ld)\n", ret.error);
+> +		free((void *)(uintptr_t)mpxy_ctx.shmem_addr);
+> +		mpxy_ctx.shmem_addr = 0;
+> +		return -EINVAL;
+> +	}
+
+but sbi_mpxy_probe()'s own `fail:` label does not free it:
+
+> +	ret = mpxy_scan_channels();
+> +	if (ret)
+> +		goto fail;
+> +...
+> +fail:
+> +	mpxy_available = false;
+> +	return ret;
+
+If mpxy_scan_channels() or the per-channel sbi_mpxy_read_attrs() loop
+fails after mpxy_setup_shmem() has already succeeded, the shmem buffer
+stays allocated forever (mpxy_available is false, but shmem_addr/shmem_size
+are never reset or freed), and a later retry path has no way to redo the
+setup cleanly. Please free/zero mpxy_ctx.shmem_addr in the `fail:` path too.
+
+4. Duplicate function prototypes added to arch/riscv/include/asm/sbi.h
+----------------------------------------------------------------------
+The patch appends a second, fully kerneldoc'd set of declarations for
+functions that are already declared a few lines above in the same hunk:
+
+> +void sbi_set_timer(uint64_t stime_value);
+> +long sbi_get_spec_version(void);
+> +int sbi_get_impl_id(void);
+...
+> +int sbi_get_mvendorid(long *mvendorid);
+> +int sbi_get_marchid(long *marchid);
+> +int sbi_get_mimpid(long *mimpid);
+> +void sbi_srst_reset(unsigned long type, unsigned long reason);
+> +int sbi_dbcn_write_byte(unsigned char ch);
+
+sbi_set_timer(), sbi_get_spec_version(), sbi_get_impl_id(),
+sbi_get_mvendorid(), sbi_get_marchid(), sbi_get_mimpid(), sbi_srst_reset()
+and sbi_dbcn_write_byte() were all already declared a few lines earlier
+(pre-existing code, lines just above the new MPXY additions). This looks
+like leftover from rebasing/reformatting the header with doc comments.
+Please drop the duplicate block and only add the genuinely new MPXY
+prototypes (sbi_mpxy_register_proto, sbi_mpxy_probe, etc.).
+
+Also minor: `#include <compiler.h>` is added to sbi.h but I don't see
+anything in this patch that needs it (no BIT()/compiler-attribute usage
+in sbi.h itself) — worth double-checking it's not a leftover unused
+include.
+
+Overall: needs a v2 addressing the above before this can be merged.
+
+Thanks,
+Leo

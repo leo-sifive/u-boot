@@ -1,0 +1,23 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Pengpeng Hou <pengpeng@iscas.ac.cn>
+Cc: u-boot@lists.u-boot-project.org, Leo Liang <leo.liang@sifive.com>,
+ Yao Zi <me@ziyao.cc>, Conor Dooley <conor.dooley@microchip.com>,
+ Heinrich Schuchardt <xypron.glpk@gmx.de>, Tom Rini <trini@konsulko.com>
+Subject: Re: [PATCH] riscv: mpfs: imply the CoreQSPI driver
+Message-Id: <review-mpfs-coreqspi-fix@andestech.com>
+In-Reply-To: <20260904131738.43312-1-pengpeng@iscas.ac.cn>
+References: <20260904131738.43312-1-pengpeng@iscas.ac.cn>
+Date: Mon, 05 Oct 2026 10:20:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+Good catch - the regression from 2f7420ccaacb ("riscv: mpfs: move SoC level
+options to the CPU Kconfig") did indeed swap "imply MICROCHIP_COREQSPI" for
+"imply MICROCHIP_QSPI", and MICROCHIP_QSPI isn't a defined Kconfig symbol in
+drivers/spi, so the imply was silently a no-op rather than failing the build.
+
+One-line fix, matches the symbol actually defined by the in-tree CoreQSPI
+driver and the MPFS DT nodes, as you note. This is a trivial, obviously
+correct fix - fine by inspection. Has anyone actually confirmed build/boot
+on MPFS hardware with CoreQSPI enabled after this change (as opposed to just
+confirming the Kconfig symbol now resolves)?

@@ -1,0 +1,34 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Yixun Lan <dlan@kernel.org>
+Cc: u-boot@lists.u-boot-project.org, spacemit@lists.linux.dev,
+ Tom Rini <trini@konsulko.com>, E Shattow <e@freeshell.de>
+Subject: Re: [PATCH 1/2] net: dwc_eth_qos: spacemit: add support for K3 SoC
+Message-Id: <review-spacemit-k3-ethernet@andestech.com>
+In-Reply-To: <20260924-02-k3-ethernet-support-v1-1-b8e1fafc9249@kernel.org>
+References: <20260924-02-k3-ethernet-support-v1-0-b8e1fafc9249@kernel.org>
+ <20260924-02-k3-ethernet-support-v1-1-b8e1fafc9249@kernel.org>
+Date: Mon, 05 Oct 2026 11:00:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+I see E Shattow already replied on-list regarding patch 2/2
+(configs: spacemit: k3: Enable Ethernet support) - has that feedback been
+folded in, or is a v2 needed for both patches together?
+
+On drivers/net/dwc_eth_qos_spacemit.c specifically:
+
+  return DIV_ROUND_CLOSEST(delay * 10 * 10, K3_DELAY_STEP * 9);
+
+The comment says "K3 require a specific factor ... in this scenario it is
+0.9", and the formula multiplies by 10*10 then divides by (step*9), which
+is delay*100/(step*9) = delay/(step*0.09)... that doesn't obviously reduce
+to "divide by step then multiply by 0.9" as described. Can you double-check
+this against the Linux dwmac-spacemit.c reference implementation and/or add
+a comment with the actual derivation, since getting RGMII delay line
+calibration wrong silently produces unreliable links rather than an
+outright failure?
+
+Also spacemit_dwmac_detected_delay_value() returns -EINVAL for delay >
+MAX_WORKED_DELAY (2800) - is 2800 ps a hardware limit from the APMU delay
+line field width, or an empirically-chosen safe max? A short comment
+referencing where 2800 comes from would help.

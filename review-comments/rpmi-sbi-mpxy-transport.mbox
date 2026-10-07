@@ -1,0 +1,38 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Charles Perry <charles.perry@microchip.com>
+Cc: u-boot@lists.denx.de, u-boot@lists.u-boot-project.org,
+ Tim Ouyang <tim609@andestech.com>, Leo Liang <leo.liang@sifive.com>,
+ Yao Zi <me@ziyao.cc>, Tom Rini <trini@konsulko.com>,
+ Rahul Pathak <rahul.pathak@oss.qualcomm.com>
+Subject: Re: [PATCH v3 1/5] firmware: rpmi: add support for the SBI MPXY transport
+Message-Id: <review-rpmi-sbi-mpxy-transport@andestech.com>
+In-Reply-To: <20260902141744.2422566-2-charles.perry@microchip.com>
+References: <20260902141744.2422566-1-charles.perry@microchip.com>
+ <20260902141744.2422566-2-charles.perry@microchip.com>
+Date: Mon, 05 Oct 2026 11:20:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+Thanks, the v2->v3 changelog shows the earlier Yao Zi review feedback (header
+reorder, simplifying channel-attrs structs to u32 arrays, dropping null
+checks before free()) was addressed.
+
+A couple of things in arch/riscv/include/asm/sbi.h:
+
+- sbi_to_linux_error() has a `default:` case alongside explicit
+  `case SBI_ERR_NOT_SUPPORTED:` / `case SBI_ERR_FAILURE:` - since both of
+  those map to -EOPNOTSUPP same as default, the explicit cases are
+  redundant with default but harmless documentation of intent; not a
+  blocker, just noting it in case you want to drop them for brevity or keep
+  them for clarity (your call).
+
+- rpmi_sbi_mpxy_read_attrs() loops `for (i = 0; i < attr_count; i++)` where
+  `i` is declared `int` and `attr_count` is `u32` - this is a signed/unsigned
+  comparison that most compilers won't warn on by default, but worth using
+  `u32 i` to be consistent with the rest of the file's u32 usage.
+
+Is this series intended to land together with a corresponding client driver
+change (rpmi-uclass.c) that actually selects/uses RPMI_SBI_MPXY, or is this
+transport meant to be usable standalone once an RPMI_FIRMWARE consumer
+exists in-tree? Worth clarifying in the cover letter for context on test
+coverage.

@@ -1,0 +1,32 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Hiago De Franco <hfranco@baylibre.com>
+Cc: u-boot@lists.u-boot-project.org, Leo Yu-Chi Liang <leo.liang@sifive.com>,
+ Yao Zi <me@ziyao.cc>, Tom Rini <trini@konsulko.com>
+Subject: Re: [PATCH 1/2] board: sophgo: milkv_duo_256m: fix fdtfile quoting
+Message-Id: <review-milkv-duo-256m-boot-fixes@andestech.com>
+In-Reply-To: <20260930-256m-fixes-v1-1-69546876ff28@baylibre.com>
+References: <20260930-256m-fixes-v1-0-69546876ff28@baylibre.com>
+ <20260930-256m-fixes-v1-1-69546876ff28@baylibre.com>
+Date: Mon, 05 Oct 2026 10:00:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+Thanks for the fix.
+
+Patch 1/2: the fdtfile=CONFIG_DEFAULT_DEVICE_TREE.dtb -> DEFAULT_DEVICE_TREE.dtb
+change makes sense and matches the pattern used by other .env files in the
+tree (the preprocessor substitutes DEFAULT_DEVICE_TREE but leaves the quoted
+CONFIG_ variant untouched). Have you confirmed other milkv_duo variants
+(non-256m) don't have the same quoting bug in their .env files? It would be
+good to check board/sophgo/milkv_duo/milkv_duo.env too.
+
+Patch 2/2: board_get_usable_ram_top() looks correct, using get_mem_top() the
+same way the Xilinx boards do to avoid the no-map DRAM reservation. One
+question: size is computed as ALIGN(CONFIG_SYS_MALLOC_LEN + total_size, SZ_1M)
+without considering CONFIG_SYS_BOOTM_LEN/other reservations that
+board_get_usable_ram_top() implementations on some other boards also add in -
+can you confirm this covers the cv1800b stack/early malloc requirements with
+margin, not just malloc_len+total_size?
+
+Have these fixes been tested on actual Milk-V Duo 256M and Milk-V Duo
+hardware showing the LMB reservation failure before/after?

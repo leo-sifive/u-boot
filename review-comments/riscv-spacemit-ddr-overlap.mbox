@@ -1,0 +1,81 @@
+From mboxrd@z Thu Jan  1 00:00:00 1970
+From: Leo Liang <leo.liang@sifive.com>
+To: Yixun Lan <dlan@kernel.org>
+Cc: u-boot@lists.u-boot-project.org, Tom Rini <trini@konsulko.com>,
+ Huan Zhou <pericycle.cc@gmail.com>, Eric Chung <eric.chung@riscstar.com>,
+ u-boot-spacemit@groups.io
+Subject: Re: [PATCH] riscv: spacemit: handle overlapping DDR firmware relocation
+In-Reply-To: <20261005T132330-0400.ddr-overlap.DaveWK225@protonmail.com>
+References: <20261005T132330-0400.ddr-overlap.DaveWK225@protonmail.com>
+Date: Mon, 05 Oct 2026 23:59:00 +0000
+
+On the patch:
+
+> -	memcpy((u8 *)dst, (u8 *)src, size);
+> +	/* The appended firmware may overlap its fixed execution address. */
+> +	memmove((u8 *)dst, (u8 *)src, size);
+
+Thanks for tracking this down and including concrete overlap numbers
+for R2S (6680 bytes) and RV2 (7704 bytes) in the commit message -- that
+makes the bug very easy to believe and reason about.
+
+A few review notes based on the actual relocation logic in this hunk:
+
+1. Direction of the fix is correct. Since dst = DDR_FIRMWARE_BASE is a
+   fixed low address and src = pos grows upward as SPL/DT data appends
+   the firmware image, dst < src always holds here, i.e. the
+   destination always starts *before* the source. A forward byte/word
+   copy (what glibc/most memcpy implementations use, including the
+   SPL copy routine on RV) is actually safe for dst < src overlap --
+   it's the dst > src case that corrupts data with a forward memcpy.
+   Can you confirm empirically (as your validation notes claim) that
+   dst < src is guaranteed never to flip, e.g. if a future board has
+   DDR_FIRMWARE_BASE placed *after* the appended blob's start? If that
+   invariant isn't architecturally guaranteed, memmove() is the right
+   defensive choice regardless, but it would help to document *why*
+   dst is always <= src (or just state memmove is used unconditionally
+   for safety, independent of the direction argument).
+
+2. Edge cases:
+   - Zero-size regions: if size == 0 (e.g. firmware header reports no
+     payload), memmove(dst, src, 0) is a no-op and safe, same as
+     memcpy was. No new issue introduced here.
+   - Exact overlap (src == dst, fully in place): memmove degrades to a
+     no-op copy correctly; memcpy with src == dst is also harmless in
+     practice but technically UB per the C standard. memmove formally
+     covers this case, which is a nice side benefit even though it's
+     not the motivating scenario.
+   - Partial overlap at the tail end (the actual bug, dst+size > src
+     with dst < src): memmove with a backwards-copying implementation
+     (copy highest-to-lowest address first) handles this correctly.
+     Worth double-checking that the memmove() pulled in for the SPL
+     build (which libc/compiler builtins are available in this early
+     boot context -- is this U-Boot's own lib/string.c memmove or a
+     compiler builtin?) actually implements the standard semantics and
+     isn't a trivial/stripped-down SPL variant that silently falls
+     back to forward copy for "size" optimization reasons. That would
+     defeat the whole fix.
+
+3. Alignment: the existing code does `size = round_up(size, 64)` only
+   *after* the copy, for cache-maintenance purposes it seems (based on
+   the subsequent context about flushing). Since memmove/memcpy don't
+   depend on alignment for correctness, this isn't a problem, but it's
+   worth confirming the round_up'd region (used later for the icache
+   invalidation, per the comment about "Ensure ... DDR firmware bytes
+   are observable") doesn't also need the overlap-safe copy semantics
+   applied to it -- i.e. that no other memcpy() call sites downstream
+   in this same relocation path have the identical overlap risk and
+   were simply not caught here.
+
+4. No performance concern: memmove's extra overlap check only runs
+   once per boot at this call site, so the mild overhead vs. memcpy is
+   irrelevant for SPL DDR training microcode size.
+
+No Reviewed-by or other review tags have been applied to this patch
+yet.
+
+Verdict: Looks correct for the described forward-copy overlap bug;
+would like confirmation on point 1 (is dst always <= src by
+construction, or is memmove purely defensive) and point 2 (which
+memmove implementation is linked into this SPL build) before this is
+ready to pick up.

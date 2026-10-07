@@ -1,0 +1,39 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Hiago De Franco <hfranco@baylibre.com>
+Cc: u-boot@lists.u-boot-project.org, Kongyang Liu <seashell11234455@gmail.com>,
+ Tom Rini <trini@konsulko.com>, Yao Zi <me@ziyao.cc>,
+ Zhuxu Ran <zhuxu_ran@zohomail.com>, Leo Liang <leo.liang@sifive.com>
+Subject: Re: [PATCH 1/3] board: sophgo: milkv_duo: add environment for standard boot
+Message-Id: <review-milkv-duo-bootstd@andestech.com>
+In-Reply-To: <20260929-milkv-duo-bootstd-v1-1-1b75c9ad6483@baylibre.com>
+References: <20260929-milkv-duo-bootstd-v1-0-1b75c9ad6483@baylibre.com>
+ <20260929-milkv-duo-bootstd-v1-1-1b75c9ad6483@baylibre.com>
+Date: Mon, 05 Oct 2026 10:10:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+The load address layout:
+
+  kernel_addr_r       0x80200000  (16MB)
+  kernel_comp_addr_r  0x81200000  (16MB)
+  fdt_addr_r          0x82200000
+  scriptaddr          0x82300000
+  pxefile_addr_r      0x82400000
+  ramdisk_addr_r      0x82500000
+
+packs everything into the first ~37MB of the 64MB DRAM, which looks fine
+arithmetically, but ramdisk_addr_r at 0x82500000 leaves only ~27MB for the
+ramdisk/initrd before hitting the end of DRAM (0x80000000+0x4000000=
+0x84000000). Given CONFIG_SYS_SDRAM_BASE here is presumably 0x80000000,
+can you confirm the 64MB figure accounts for the full board (both milkv_duo
+and milkv_duo_256m use this same .env, per the series), not just the 256M
+variant?
+
+Also kernel_comp_size=0x1000000 (16MB) for the compressed kernel staging
+area - is this validated against the largest kernel image you've tested, or
+just a conservative round number carried over from other boards' envs?
+
+Patches 2/3 and 3/3 (enabling BOOTSTD_DEFAULTS and reducing
+CONFIG_STACK_SIZE to 1MB) weren't included in this file snippet I reviewed -
+please confirm reducing the stack size doesn't regress any SPL/boot path
+given the DRAM is only 64MB total here.

@@ -1,0 +1,38 @@
+From U-Boot Review <tim609@andestech.com> Mon Oct 05 00:00:00 2026
+From: U-Boot Review <tim609@andestech.com>
+To: Yixun Lan <dlan@kernel.org>
+Cc: u-boot-spacemit@groups.io, u-boot@lists.u-boot-project.org,
+ Eric Chung <eric.chung@riscstar.com>, Raymond Mao <raymond.mao@riscstar.com>,
+ Junhui Liu <junhui.liu@pigmoral.tech>, Tom Rini <trini@konsulko.com>
+Subject: Re: [PATCH v2 1/2] pinctrl: spacemit: configure drive strength based on power source
+Message-Id: <review-spacemit-k3-pinctrl@andestech.com>
+In-Reply-To: <20260923-01-k3-pinctrl-support-v2-1-e76a917ee252@kernel.org>
+References: <20260923-01-k3-pinctrl-support-v2-0-e76a917ee252@kernel.org>
+ <20260923-01-k3-pinctrl-support-v2-1-e76a917ee252@kernel.org>
+Date: Mon, 05 Oct 2026 11:10:00 +0000
+Content-Type: text/plain; charset="utf-8"
+
+Replacing pinctrl_generic_set_state() with spacemit_pinctrl_set_state() to
+force power-source before drive-strength ordering is a reasonable approach,
+and reordering spacemit_pinconf_params[] alone wouldn't have been sufficient
+since dev_read_prop() iteration order there still depends on array order,
+not DT order - so the custom set_state() callback is the right fix.
+
+A few questions on spacemit_pinctrl_apply_group():
+
+- It reads "pinmux" from `config` via dev_read_size()/dev_read_u32_index(),
+  but does this account for nodes using the generic "pins" + separate mux
+  binding style instead of a packed "pinmux" array, or is this SoC's
+  binding always a packed u32 pinmux list? If the driver only supports the
+  latter, that's fine, just want to confirm it's intentional.
+
+- spacemit_pinctrl_set_state() iterates `device_find_first_child()` /
+  `device_find_next_child()` over `config` to also apply grouped
+  sub-nodes. Is this recursing one level only, or could pinctrl groups be
+  nested deeper in any real DT? If only one level is ever used, that's
+  fine as-is.
+
+- This changes the global set_state callback for the whole driver (used by
+  both K1 and K3 per pinctrl-k1.c), not just K3 - can you confirm this was
+  tested on K1 hardware too, since the series title says "k3-pinctrl" but
+  the callback change is shared?

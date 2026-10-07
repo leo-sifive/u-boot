@@ -1,0 +1,127 @@
+From mboxrd@z Thu Jan  1 00:00:00 1970
+From: Leo Liang <leo.liang@sifive.com>
+To: Dave Klotz <DaveWK225@protonmail.com>
+Cc: u-boot@lists.u-boot-project.org, Huan Zhou <pericycle.cc@gmail.com>,
+ Eric Chung <eric.chung@riscstar.com>, Yixun Lan <dlan@kernel.org>,
+ Tom Rini <trini@konsulko.com>, Guodong Xu <guodong@riscstar.com>,
+ Raymond Mao <raymond.mao@riscstar.com>, u-boot-spacemit@groups.io
+Subject: Re: [PATCH RESEND 0/2] spacemit: k1: SPL robustness for boards without a PMIC or SPI NOR
+In-Reply-To: <cover.1790976767.git.DaveWK225@protonmail.com>
+References: <cover.1790976767.git.DaveWK225@protonmail.com>
+Date: Tue, 07 Oct 2026 00:00:00 +0000
+
+Hi Dave,
+
+Thanks for the resend and for the extra OrangePi R2S testing report.
+Went through both patches and have some questions/comments before this
+is ready to merge.
+
+Patch 1/2 ("do not require a PMIC or an SPI controller in SPL"):
+
+> -=09if (ret)
+> -=09=09panic("Fail to detect PMIC (%d)\n", ret);
+> +=09if (ret) {
+> +=09=09/*
+> +=09=09 * Not every K1 board describes its PMIC to the SPL, and on some
+> +=09=09 * the rails are already up when the SPL runs. Only boards whose
+> +=09=09 * DDR bring-up depends on programming the bucks need one, so a
+> +=09=09 * missing PMIC is not fatal here.
+> +=09=09 */
+> +=09=09log_info("No PMIC (%d), leaving rails as found\n", ret);
+> +=09=09return;
+> +=09}
+
+- This turns "no PMIC node" and "PMIC node present but probe failed"
+  into the same code path. uclass_get_device() returning -ENODEV is a
+  legitimate "board has none" case, but -EIO/-ETIMEDOUT/etc. from an
+  I2C bus that *is* populated with a PMIC looks identical here. On
+  BPI-F3/MusePi Pro, a flaky I2C bus or a bad regulator strap would
+  now silently leave vdd_core/vdd_1v8/vdd_mmc unprogrammed and boot
+  on undervolted/wrong rails instead of panicking — that's strictly
+  worse than today's behavior for boards that *do* ship a PMIC. Worth
+  checking `ret == -ENODEV` explicitly (or whatever uclass returns for
+  "no such DT node") rather than treating every error the same way,
+  so real probe failures on PMIC-equipped boards still panic.
+- Same question applies to the SPI controller hunk below it.
+
+> +=09ret =3D uclass_get_device(UCLASS_SPI, 0, &dev);
+> -=09if (ret)
+> -=09=09panic("Fail to detect spi controller.\n");
+> +=09if (ret) {
+> +=09=09log_info("No SPI controller (%d)\n", ret);
+> +=09=09return;
+> +=09}
+
+- Is this change gated by any Kconfig (e.g. only compiled when a
+  board that lacks SPI NOR is selected), or does it apply to every K1
+  target unconditionally? If it's unconditional, please say so
+  explicitly in the commit message — right now the commit log implies
+  it's safe for "boards that boot from eMMC or microSD" but the code
+  has no way to know which board it's running on at this point, so
+  the reasoning needs to hold for every K1 board that includes this
+  SPL, not just the ones you tested.
+
+Patch 2/2 ("fall back to the other boot devices in SPL"):
+
+> +=09if (CONFIG_IS_ENABLED(MMC)) {
+> +=09=09fallbacks[m++] =3D BOOT_DEVICE_MMC1;
+> +=09=09fallbacks[m++] =3D BOOT_DEVICE_MMC2;
+> +=09}
+> +=09if (CONFIG_IS_ENABLED(SPI_LOAD))
+> +=09=09fallbacks[m++] =3D BOOT_DEVICE_SPI;
+> +
+> +=09spl_boot_list[n++] =3D spl_boot_device();
+> +=09for (i =3D 0; i < m; i++)
+> +=09=09if (fallbacks[i] !=3D spl_boot_list[0])
+> +=09=09=09spl_boot_list[n++] =3D fallbacks[i];
+> +=09spl_boot_list[n] =3D BOOT_DEVICE_NONE;
+
+- fallbacks[] is fixed-size 3 (MMC1, MMC2, SPI) and m can reach 3,
+  which matches, but this is fragile — if another CONFIG_IS_ENABLED()
+  branch is added later without bumping the array size it's a stack
+  overflow with no compiler warning. A comment pinning
+  "ARRAY_SIZE(fallbacks) must cover every fallback source below" (or
+  sizing with a constant) would help the next person who touches this.
+- Fallback order is always MMC1, MMC2, then SPI regardless of which
+  device spl_boot_device() actually detected. For the OrangePi R2S
+  case you describe (BootROM tries SD/MMC2 first, then loads FSBL from
+  eMMC/MMC1), if detection ever returns MMC2 first, the current code
+  still probes MMC1 before SPI, which seems right. But it's worth
+  confirming this ordering was intentional rather than coincidental,
+  since the commit message talks about "the other MMC controller"
+  (singular) while the code always appends *both* MMC1 and MMC2 minus
+  whatever matched spl_boot_device() — please double check the case
+  where spl_boot_device() itself already returns BOOT_DEVICE_SPI, to
+  make sure MMC1/MMC2 are still tried as fallbacks and not just SPI
+  alone.
+- This changes boot-device search order for *every* K1 board, not
+  just the PMIC/SPI-NOR-less ones from patch 1. On BPI-F3/MusePi Pro,
+  if spl_boot_device() ever mis-detects (unlikely, but this series
+  exists because BootROM state can be ambiguous), the SPL will now
+  silently try loading U-Boot from an MMC controller or SPI NOR that
+  it previously would never have touched. Is that acceptable, or
+  should board_boot_order() be scoped (e.g. via a Kconfig symbol
+  selected only by the boards that need it) rather than applying
+  globally?
+- Please also confirm spl_spi_load_image() cleanly reports "no
+  image"/returns an error rather than hanging when BOOT_DEVICE_SPI is
+  reached on a board with no SPI NOR populated (patch 1 already copes
+  with "no SPI controller", but this is "controller present, no
+  flash/valid image").
+
+Process note: neither the original two patches (patchwork IDs 2315364
+and 2315366) nor this RESEND carry any Reviewed-by/Acked-by tags, and
+I don't see any changelog in the commit messages between the original
+postings and the resend — the cover letter just says "No changes." Can
+you confirm whether this RESEND is meant to supersede 2315364/2315366
+outright, so the maintainers can mark those two as superseded in
+patchwork rather than carrying duplicate entries?
+
+Verdict: not ready to merge as-is. Please address the -ENODEV vs.
+other-errno distinction in patch 1, clarify the Kconfig scoping for
+both patches, and confirm the boot-order fallback behavior described
+above, then resend as v2 (or reply here if I've misread the probe
+semantics).
+
+Thanks,
+Leo
